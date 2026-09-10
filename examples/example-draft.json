@@ -1,0 +1,61 @@
+{
+  "id": "2026-09-10-faultbench-offline-search",
+  "title": "Faultbench can now search manuals offline",
+  "createdAt": "2026-09-10T09:00:00.000Z",
+  "updatedAt": "2026-09-10T09:20:00.000Z",
+  "source": {
+    "text": "Faultbench can now search HVAC manuals completely offline. No signal in the mechanical room, no problem.",
+    "url": null
+  },
+  "media": [
+    {
+      "id": "media-1",
+      "path": "/Users/you/.postbench/media/2026-09-10-faultbench-offline-search/media-1.png",
+      "name": "screenshot.png",
+      "type": "image",
+      "mime": "image/png",
+      "size": 481233,
+      "description": "Screenshot showing Faultbench finding a compressor diagnostic procedure with a page citation.",
+      "durationSec": null
+    }
+  ],
+  "platforms": {
+    "linkedin": {
+      "enabled": true,
+      "text": "Most mechanical rooms have no signal.\n\nThat is where techs actually need the manual, so Faultbench now runs its search fully offline. Download the manuals once, then look up a procedure with no connection at all.\n\nSame citations, same page numbers. Don't trust the AI. Check the manual.",
+      "hashtags": ["HVAC", "FieldService"],
+      "suggestedHashtags": ["Trades", "HVACService"],
+      "mediaIds": ["media-1"],
+      "prepared": null,
+      "posted": null
+    },
+    "instagram": {
+      "enabled": true,
+      "text": "No signal in the basement? Still finds the procedure.\n\nOffline manual search is live in Faultbench.",
+      "hashtags": ["hvactech", "hvac", "trades", "fieldservice"],
+      "suggestedHashtags": ["hvaclife", "repairtech"],
+      "mediaIds": ["media-1"],
+      "prepared": null,
+      "posted": null
+    },
+    "facebook": {
+      "enabled": true,
+      "text": "You know the drill: you're standing in a mechanical room with no bars, and the answer you need is buried on page 214 of a PDF.\n\nFaultbench now searches your manuals offline, so the lookup works whether you have signal or not.",
+      "hashtags": [],
+      "suggestedHashtags": ["HVAC"],
+      "mediaIds": ["media-1"],
+      "prepared": null,
+      "posted": null
+    },
+    "x": {
+      "enabled": true,
+      "text": "Faultbench now searches HVAC manuals fully offline. No signal in the mechanical room, still finds the procedure and the page number.",
+      "hashtags": ["HVAC"],
+      "suggestedHashtags": ["FieldService"],
+      "mediaIds": ["media-1"],
+      "prepared": null,
+      "posted": null
+    }
+  },
+  "status": "draft"
+}

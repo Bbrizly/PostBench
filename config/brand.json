@@ -1,0 +1,18 @@
+{
+  "name": "Faultbench",
+  "website": "https://faultbench.com",
+  "audience": ["HVAC technicians", "tradespeople", "field service technicians"],
+  "voice": ["plainspoken", "practical", "direct", "short", "respectful"],
+  "avoid": [
+    "AI hype",
+    "corporate SaaS language",
+    "academic wording",
+    "revolutionary",
+    "game-changing",
+    "AI-powered intelligence platform"
+  ],
+  "preferred_phrases": [
+    "Don't trust the AI. Check the manual.",
+    "The answer is usually in the manual. Finding it is the problem."
+  ]
+}
