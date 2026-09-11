@@ -13,6 +13,52 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? v : fallback
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function retryDelay(res: Response | null, attempt: number): number {
+  const retryAfter = res?.headers.get('retry-after')
+  const seconds = retryAfter ? Number(retryAfter) : NaN
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 5000)
+  return 400 * 2 ** attempt
+}
+
+function retryableStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 429 || status >= 500
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, label: string): Promise<Response> {
+  const attempts = 3
+  let lastNetworkError: unknown = null
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let res: Response | null = null
+    try {
+      res = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(envInt('POSTBENCH_AI_TIMEOUT_MS', 180_000)),
+      })
+    } catch (err) {
+      lastNetworkError = err
+      if (attempt < attempts - 1) {
+        await sleep(retryDelay(null, attempt))
+        continue
+      }
+      break
+    }
+
+    if (res.ok) return res
+    const detail = (await res.text()).trim().slice(0, 1200)
+    if (retryableStatus(res.status) && attempt < attempts - 1) {
+      await sleep(retryDelay(res, attempt))
+      continue
+    }
+    throw new Error(`${label} error ${res.status}${detail ? `: ${detail}` : ''}`)
+  }
+
+  const message = lastNetworkError instanceof Error ? lastNetworkError.message : String(lastNetworkError ?? 'request failed')
+  throw new Error(`${label} request failed after ${attempts} attempts: ${message}`)
+}
+
 /** Uses the already-authenticated Claude Code CLI. No API key needed. */
 export const claudeCliAdapter: Adapter = {
   id: 'claude-cli',
@@ -48,22 +94,27 @@ export const anthropicAdapter: Adapter = {
   async complete(prompt) {
     const key = process.env.ANTHROPIC_API_KEY
     if (!key) throw new AiUnavailableError('ANTHROPIC_API_KEY is not set.')
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
+    const res = await fetchWithRetry(
+      'https://api.anthropic.com/v1/messages',
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: process.env.POSTBENCH_AI_MODEL || 'claude-sonnet-5',
+          max_tokens: 2000,
+          messages: [{ role: 'user', content: prompt }],
+        }),
       },
-      body: JSON.stringify({
-        model: process.env.POSTBENCH_AI_MODEL || 'claude-sonnet-5',
-        max_tokens: 2000,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    })
-    if (!res.ok) throw new Error(`Anthropic API error ${res.status}: ${await res.text()}`)
-    const json = (await res.json()) as { content: { type: string; text?: string }[] }
-    return json.content.map((c) => c.text ?? '').join('')
+      'Anthropic API',
+    )
+    const json = (await res.json()) as { content?: { type: string; text?: string }[] }
+    const text = json.content?.map((c) => c.text ?? '').join('') ?? ''
+    if (!text.trim()) throw new Error('Anthropic API returned an empty response.')
+    return text
   },
 }
 
@@ -73,17 +124,22 @@ export const openaiAdapter: Adapter = {
   async complete(prompt) {
     const key = process.env.OPENAI_API_KEY
     if (!key) throw new AiUnavailableError('OPENAI_API_KEY is not set.')
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model: process.env.POSTBENCH_AI_MODEL || 'gpt-4o-mini',
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    })
-    if (!res.ok) throw new Error(`OpenAI API error ${res.status}: ${await res.text()}`)
-    const json = (await res.json()) as { choices: { message: { content: string } }[] }
-    return json.choices[0]?.message.content ?? ''
+    const res = await fetchWithRetry(
+      'https://api.openai.com/v1/chat/completions',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+        body: JSON.stringify({
+          model: process.env.POSTBENCH_AI_MODEL || 'gpt-4o-mini',
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      },
+      'OpenAI API',
+    )
+    const json = (await res.json()) as { choices?: { message?: { content?: string | null } }[] }
+    const text = json.choices?.[0]?.message?.content ?? ''
+    if (!text.trim()) throw new Error('OpenAI API returned an empty response.')
+    return text
   },
 }
 
@@ -92,19 +148,30 @@ export const ollamaAdapter: Adapter = {
   label: 'Ollama (local)',
   async complete(prompt) {
     const host = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434'
-    const res = await fetch(`${host}/api/generate`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: process.env.POSTBENCH_AI_MODEL || 'llama3.1',
-        prompt,
-        stream: false,
-      }),
-    }).catch(() => {
-      throw new AiUnavailableError(`Ollama is not reachable at ${host}.`)
-    })
-    if (!res.ok) throw new Error(`Ollama error ${res.status}: ${await res.text()}`)
-    return ((await res.json()) as { response: string }).response
+    let res: Response
+    try {
+      res = await fetchWithRetry(
+        `${host}/api/generate`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: process.env.POSTBENCH_AI_MODEL || 'llama3.1',
+            prompt,
+            stream: false,
+          }),
+        },
+        'Ollama',
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (/request failed after|fetch failed|ECONNREFUSED|not reachable/i.test(message))
+        throw new AiUnavailableError(`Ollama is not reachable at ${host}.`)
+      throw err
+    }
+    const text = ((await res.json()) as { response?: string }).response ?? ''
+    if (!text.trim()) throw new Error('Ollama returned an empty response.')
+    return text
   },
 }
 
