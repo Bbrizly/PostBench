@@ -5,7 +5,6 @@ import path from 'node:path'
 import request from 'supertest'
 import { isPreparedCurrent, isPostedCurrent, type Draft } from '../src/shared/types.js'
 
-// Never let the integration suite touch a real browser.
 vi.mock('../src/platforms/index.js', () => ({
   preparePlatform: vi.fn(async ({ platform }: { platform: string }) => ({
     platform,
@@ -112,12 +111,7 @@ describe('postbench server', () => {
 
   it('does not let a full-draft PUT inject server-owned media paths', async () => {
     const poisoned = structuredClone(draft)
-    poisoned.media.push({
-      ...poisoned.media[0]!,
-      id: 'evil',
-      path: '/etc/passwd',
-      name: 'passwd',
-    })
+    poisoned.media.push({ ...poisoned.media[0]!, id: 'evil', path: '/etc/passwd', name: 'passwd' })
     const res = await request(app).put(`/api/drafts/${draft.id}`).send(poisoned)
     expect(res.status).toBe(400)
     expect(res.body.error).toMatch(/managed by the media endpoints/i)
@@ -208,6 +202,13 @@ describe('postbench server', () => {
     for (const call of vi.mocked(preparePlatform).mock.calls) expect(call[0]).not.toHaveProperty('publish')
   })
 
+  it('rejects a malformed manual post URL', async () => {
+    const res = await request(app)
+      .post(`/api/drafts/${draft.id}/posted`)
+      .send({ platform: 'linkedin', url: 'not a url' })
+    expect(res.status).toBe(400)
+  })
+
   it('records a manual post against the exact current payload', async () => {
     const res = await request(app)
       .post(`/api/drafts/${draft.id}/posted`)
@@ -234,6 +235,7 @@ describe('postbench server', () => {
     expect(res.status).toBe(200)
     expect(res.body.home).toBe(tmp)
     expect(res.body.acceptedTypes).toContain('image/png')
+    expect(typeof res.body.playwrightInstalled).toBe('boolean')
   })
 
   it('deletes a draft', async () => {

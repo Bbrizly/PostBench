@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   PLATFORM_LABELS,
   PLATFORM_LIMITS,
@@ -43,8 +43,12 @@ export function PlatformCard({
 }) {
   const post = draft.platforms[platform]
   const [showPreview, setShowPreview] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [postUrl, setPostUrl] = useState('')
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [postUrl, setPostUrl] = useState(post.posted?.url ?? '')
+
+  useEffect(() => {
+    setPostUrl(post.posted?.url ?? '')
+  }, [post.posted?.url])
 
   const composed = composeText(post)
   const count = countCharacters(composed, platform)
@@ -63,9 +67,13 @@ export function PlatformCard({
     })
 
   const copy = async () => {
-    await navigator.clipboard.writeText(composed)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1600)
+    try {
+      await navigator.clipboard.writeText(composed)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+    setTimeout(() => setCopyState('idle'), 1600)
   }
 
   return (
@@ -125,7 +133,7 @@ export function PlatformCard({
                 {m.type === 'image' ? (
                   <img className="thumb" src={mediaUrl(draft.id, m.id)} alt="" />
                 ) : (
-                  <span className="thumb" />
+                  <video className="thumb" src={mediaUrl(draft.id, m.id)} muted preload="metadata" />
                 )}
                 <span>{m.name}</span>
                 <span className="kind">{m.type}</span>
@@ -171,7 +179,7 @@ export function PlatformCard({
 
       <div className="row">
         <button type="button" className="btn small" onClick={copy}>
-          {copied ? 'Copied ✓' : 'Copy'}
+          {copyState === 'copied' ? 'Copied ✓' : copyState === 'failed' ? 'Copy failed' : 'Copy'}
         </button>
         <button type="button" className="btn small" onClick={onOpen}>
           Open {PLATFORM_LABELS[platform]}
@@ -184,7 +192,7 @@ export function PlatformCard({
         ) : (
           <>
             <input
-              type="text"
+              type="url"
               placeholder="post URL (optional)"
               value={postUrl}
               onChange={(e) => setPostUrl(e.target.value)}
