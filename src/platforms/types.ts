@@ -10,6 +10,11 @@ export type ReadyResult = {
   details: string[]
 }
 
+export type ExpectedComposerState = {
+  text: string
+  mediaCount: number
+}
+
 export interface PlatformAdapter {
   id: Platform
   /** Where the user ends up if automation is skipped entirely. */
@@ -19,7 +24,7 @@ export interface PlatformAdapter {
   openComposer(page: Page): Promise<void>
   setText(page: Page, text: string): Promise<void>
   uploadMedia(page: Page, paths: string[]): Promise<void>
-  checkReady(page: Page): Promise<ReadyResult>
+  checkReady(page: Page, expected: ExpectedComposerState): Promise<ReadyResult>
 }
 
 export class ComposerNotFoundError extends Error {}
