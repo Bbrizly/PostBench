@@ -2,6 +2,7 @@ import express, { type Request, type Response, type NextFunction } from 'express
 import multer from 'multer'
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import {
   DraftSchema,
@@ -14,6 +15,7 @@ import {
   validatePlatform,
   composeText,
   platformContentKey,
+  defaultMediaSelection,
   type Draft,
   type Platform,
 } from '../shared/types.js'
@@ -30,12 +32,34 @@ import {
   profileDir,
   REPO_ROOT,
 } from './store.js'
-import { ACCEPTED_MIME, MAX_FILE_BYTES, convertToMp4, deleteMediaFile, hasFfmpeg, saveUpload } from './media.js'
+import {
+  ACCEPTED_MIME,
+  MAX_FILE_BYTES,
+  convertToMp4,
+  deleteMediaFile,
+  hasFfmpeg,
+  saveUpload,
+  stagingDir,
+} from './media.js'
 import { generateContent } from '../ai/index.js'
 import { selectAdapter } from '../ai/adapters.js'
 import { openComposerOnly, preparePlatform } from '../platforms/index.js'
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE_BYTES } })
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      try {
+        const dir = stagingDir()
+        fs.mkdirSync(dir, { recursive: true })
+        cb(null, dir)
+      } catch (err) {
+        cb(err as Error, '')
+      }
+    },
+    filename: (_req, _file, cb) => cb(null, randomUUID()),
+  }),
+  limits: { fileSize: MAX_FILE_BYTES },
+})
 
 class HttpError extends Error {
   constructor(
@@ -120,13 +144,19 @@ export function createApp() {
       const current = await getDraft(String(req.params.id))
       if (incoming.id !== current.id) throw new HttpError(400, 'Draft id cannot be changed.')
       if (incoming.revision !== current.revision) throw new DraftConflictError(current.id)
-      // Media is owned by the upload endpoints; the UI never gets to rewrite known file paths.
+
+      const incomingMedia = new Map(incoming.media.map((m) => [m.id, m]))
+      if (
+        incomingMedia.size !== incoming.media.length ||
+        incoming.media.length !== current.media.length ||
+        current.media.some((m) => !incomingMedia.has(m.id))
+      )
+        throw new HttpError(400, 'Media files are managed by the media endpoints and cannot be added or removed in a draft save.')
+
+      // The client may edit media descriptions, but file paths/type/size metadata remain server-owned.
       const merged: Draft = {
         ...incoming,
-        media: incoming.media.map((m) => {
-          const known = current.media.find((k) => k.id === m.id)
-          return known ? { ...known, description: m.description } : m
-        }),
+        media: current.media.map((known) => ({ ...known, description: incomingMedia.get(known.id)!.description })),
         createdAt: current.createdAt,
       }
       merged.title = merged.source.text ? titleFromText(merged.source.text) : merged.title
@@ -156,14 +186,23 @@ export function createApp() {
       if (files.length === 0) throw new HttpError(400, 'No files were uploaded.')
 
       const errors: string[] = []
+      const added = [] as Draft['media']
       for (const f of files) {
         try {
-          draft.media.push(await saveUpload(draft.id, f))
+          const media = await saveUpload(draft.id, f)
+          draft.media.push(media)
+          added.push(media)
         } catch (err) {
           errors.push(err instanceof Error ? err.message : String(err))
         }
       }
-      res.json({ draft: await saveDraft(draft), errors })
+
+      try {
+        res.json({ draft: await saveDraft(draft), errors })
+      } catch (err) {
+        for (const media of added) await deleteMediaFile(media)
+        throw err
+      }
     }),
   )
 
@@ -190,12 +229,19 @@ export function createApp() {
       const draft = await getDraft(String(req.params.id))
       const index = draft.media.findIndex((m) => m.id === req.params.mediaId)
       if (index === -1) throw new HttpError(404, 'No such media.')
+      const original = draft.media[index]!
+      let converted
       try {
-        draft.media[index] = await convertToMp4(draft.media[index]!)
+        converted = await convertToMp4(original)
+        draft.media[index] = converted
+        const saved = await saveDraft(draft)
+        if (converted.path !== original.path) await deleteMediaFile(original)
+        res.json(saved)
       } catch (err) {
+        if (converted && converted.path !== original.path) await deleteMediaFile(converted)
+        if (err instanceof DraftConflictError) throw err
         throw new HttpError(400, err instanceof Error ? err.message : String(err))
       }
-      res.json(await saveDraft(draft))
     }),
   )
 
@@ -205,11 +251,12 @@ export function createApp() {
       const draft = await getDraft(String(req.params.id))
       const media = draft.media.find((m) => m.id === req.params.mediaId)
       if (!media) throw new HttpError(404, 'No such media.')
-      await deleteMediaFile(media)
       draft.media = draft.media.filter((m) => m.id !== media.id)
       for (const p of PLATFORMS)
         draft.platforms[p].mediaIds = draft.platforms[p].mediaIds.filter((id) => id !== media.id)
-      res.json(await saveDraft(draft))
+      const saved = await saveDraft(draft)
+      await deleteMediaFile(media)
+      res.json(saved)
     }),
   )
 
@@ -252,7 +299,7 @@ export function createApp() {
           // Existing preparation/publication records remain as history; contentKey makes them stale.
           mediaIds: draft.platforms[p].mediaIds.length
             ? draft.platforms[p].mediaIds
-            : draft.media.filter((m) => m.type === 'image').map((m) => m.id),
+            : defaultMediaSelection(p, draft.media),
         }
       }
       draft.status = draftStatus(draft)
@@ -393,7 +440,6 @@ export function createApp() {
     if (err instanceof z.ZodError)
       return res.status(400).json({ error: `Invalid request: ${err.issues.map((i) => i.message).join('; ')}` })
     const message = err instanceof Error ? err.message : String(err)
-    // Readable message to the UI, full detail to the terminal only.
     console.error('[postbench]', err)
     return res.status(500).json({ error: message })
   })

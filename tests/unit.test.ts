@@ -13,6 +13,7 @@ import {
   platformContentKey,
   isPreparedCurrent,
   isPostedCurrent,
+  defaultMediaSelection,
   type Media,
 } from '../src/shared/types.js'
 import { parseGenerationResult, extractJson } from '../src/ai/parse.js'
@@ -105,13 +106,17 @@ describe('platform validation', () => {
     expect(issues.some((i) => i.level === 'error' && i.message.includes('280'))).toBe(true)
   })
 
-  it('rejects mixing images and video on X', () => {
-    const issues = validatePlatform(
+  it('allows a mixed X post while enforcing four total media items', () => {
+    const valid = validatePlatform(
       'x',
-      { ...emptyPlatformPost(), text: 'hi', mediaIds: ['a', 'b'] },
-      [image('a'), video('b')],
+      { ...emptyPlatformPost(), text: 'hi', mediaIds: ['a', 'v'] },
+      [image('a'), video('v')],
     )
-    expect(issues.some((i) => i.message.includes('cannot use this media combination'))).toBe(true)
+    expect(valid.filter((i) => i.level === 'error')).toEqual([])
+
+    const media = [image('a'), image('b'), image('c'), image('d'), video('v')]
+    const tooMany = validatePlatform('x', { ...emptyPlatformPost(), text: 'hi', mediaIds: media.map((m) => m.id) }, media)
+    expect(tooMany.some((i) => i.message.includes('at most 4 media items'))).toBe(true)
   })
 
   it('requires media on Instagram', () => {
@@ -128,10 +133,25 @@ describe('platform validation', () => {
     expect(issues.some((i) => i.message.includes('Convert it to MP4'))).toBe(true)
   })
 
-  it('caps X at four images', () => {
-    const media = ['a', 'b', 'c', 'd', 'e'].map((i) => image(i))
-    const issues = validatePlatform('x', { ...emptyPlatformPost(), text: 'hi', mediaIds: media.map((m) => m.id) }, media)
-    expect(issues.some((i) => i.message.includes('at most 4 images'))).toBe(true)
+  it('allows up to twenty LinkedIn images but not desktop WEBP', () => {
+    const images = Array.from({ length: 20 }, (_, i) => image(String(i)))
+    expect(
+      validatePlatform('linkedin', { ...emptyPlatformPost(), text: 'hi', mediaIds: images.map((m) => m.id) }, images)
+        .filter((i) => i.level === 'error'),
+    ).toEqual([])
+
+    const webp = image('webp', 'image/webp')
+    expect(
+      validatePlatform('linkedin', { ...emptyPlatformPost(), text: 'hi', mediaIds: [webp.id] }, [webp])
+        .some((i) => i.message.includes('does not accept')),
+    ).toBe(true)
+  })
+
+  it('chooses compatible defaults and includes video-only Instagram drafts', () => {
+    const mov = video('mov', 'video/quicktime')
+    const mp4 = video('mp4')
+    expect(defaultMediaSelection('instagram', [mov, mp4])).toEqual(['mp4'])
+    expect(defaultMediaSelection('x', [image('a'), mp4])).toEqual(['a', 'mp4'])
   })
 
   it('passes a valid LinkedIn post', () => {

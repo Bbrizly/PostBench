@@ -22,7 +22,7 @@ let app: import('express').Express
 beforeAll(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'postbench-test-'))
   process.env.POSTBENCH_HOME = tmp
-  process.env.POSTBENCH_AI_PROVIDER = 'none' // offline templates, no network, no CLI
+  process.env.POSTBENCH_AI_PROVIDER = 'none'
   const { createApp } = await import('../src/server/app.js')
   app = createApp()
 })
@@ -31,7 +31,6 @@ afterAll(async () => {
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
-// A 1x1 PNG.
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
@@ -96,26 +95,40 @@ describe('postbench server', () => {
     expect(res.body.error).toMatch(/No draft named/)
   })
 
-  it('uploads media and serves it back', async () => {
+  it('uploads media, detects the actual file type, and serves it back', async () => {
     const res = await request(app)
       .post(`/api/drafts/${draft.id}/media`)
-      .attach('files', PNG, { filename: 'screenshot.png', contentType: 'image/png' })
+      .attach('files', PNG, { filename: 'screenshot.bin', contentType: 'application/octet-stream' })
     expect(res.status).toBe(200)
     draft = res.body.draft
     expect(draft.media).toHaveLength(1)
     expect(draft.media[0]!.type).toBe('image')
+    expect(draft.media[0]!.mime).toBe('image/png')
 
     const file = await request(app).get(`/media/${draft.id}/${draft.media[0]!.id}`)
     expect(file.status).toBe(200)
     expect(file.headers['content-type']).toContain('image/png')
   })
 
-  it('reports unsupported file types instead of crashing', async () => {
+  it('does not let a full-draft PUT inject server-owned media paths', async () => {
+    const poisoned = structuredClone(draft)
+    poisoned.media.push({
+      ...poisoned.media[0]!,
+      id: 'evil',
+      path: '/etc/passwd',
+      name: 'passwd',
+    })
+    const res = await request(app).put(`/api/drafts/${draft.id}`).send(poisoned)
+    expect(res.status).toBe(400)
+    expect(res.body.error).toMatch(/managed by the media endpoints/i)
+  })
+
+  it('reports unsupported file contents instead of trusting the MIME header', async () => {
     const res = await request(app)
       .post(`/api/drafts/${draft.id}/media`)
-      .attach('files', Buffer.from('hello'), { filename: 'notes.txt', contentType: 'text/plain' })
+      .attach('files', Buffer.from('hello'), { filename: 'fake.png', contentType: 'image/png' })
     expect(res.status).toBe(200)
-    expect(res.body.errors[0]).toMatch(/not a supported file type/)
+    expect(res.body.errors[0]).toMatch(/not a supported/i)
     expect(res.body.draft.media).toHaveLength(1)
     draft = res.body.draft
   })
