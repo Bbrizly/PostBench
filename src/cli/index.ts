@@ -14,7 +14,14 @@ import {
   draftsDir,
   REPO_ROOT,
 } from '../server/store.js'
-import { newDraft, slugId, PLATFORMS, composeText, draftStatus } from '../shared/types.js'
+import {
+  newDraft,
+  slugId,
+  PLATFORMS,
+  composeText,
+  draftStatus,
+  defaultMediaSelection,
+} from '../shared/types.js'
 import { generateContent } from '../ai/index.js'
 import { selectAdapter } from '../ai/adapters.js'
 import { hasFfmpeg } from '../server/media.js'
@@ -61,9 +68,9 @@ async function main() {
     case 'create': {
       const text = flag('input') ?? ''
       const draft = newDraft(await uniqueId(text), text, flag('url') || null)
-      await saveDraft(draft)
-      console.log(`Created draft ${draft.id}`)
-      await serve(draft.id, true)
+      const saved = await saveDraft(draft)
+      console.log(`Created draft ${saved.id}`)
+      await serve(saved.id, !hasFlag('no-open'))
       break
     }
 
@@ -105,11 +112,20 @@ async function main() {
       for (const p of PLATFORMS) {
         const g = result[p]
         if (!g) continue
-        draft.platforms[p] = { ...draft.platforms[p], text: g.text, hashtags: g.hashtags, suggestedHashtags: g.suggestedHashtags }
+        draft.platforms[p] = {
+          ...draft.platforms[p],
+          text: g.text,
+          hashtags: g.hashtags,
+          suggestedHashtags: g.suggestedHashtags,
+          mediaIds: draft.platforms[p].mediaIds.length
+            ? draft.platforms[p].mediaIds
+            : defaultMediaSelection(p, draft.media),
+        }
       }
-      await saveDraft(draft)
+      draft.status = draftStatus(draft)
+      const saved = await saveDraft(draft)
       console.log(`Generated with ${provider}.${note ? ` ${note}` : ''}\n`)
-      for (const p of PLATFORMS) console.log(`--- ${p} ---\n${composeText(draft.platforms[p])}\n`)
+      for (const p of PLATFORMS) console.log(`--- ${p} ---\n${composeText(saved.platforms[p])}\n`)
       break
     }
 
@@ -147,7 +163,7 @@ async function main() {
     default:
       console.log(`postbench — local social posting cockpit
 
-  postbench create [--input "..."] [--url "..."] [--open]   new draft, opens the UI
+  postbench create [--input "..."] [--url "..."] [--no-open] new draft, opens the UI by default
   postbench open <draft-id>                                 open an existing draft
   postbench serve [--no-open]                               just start the UI
   postbench list                                            list drafts

@@ -116,8 +116,6 @@ export function slugId(text: string, date = new Date()): string {
   return `${day}-${slug}`
 }
 
-/* ---------- hashtags ---------- */
-
 export function normalizeHashtag(tag: string): string {
   return tag.replace(/[^\p{L}\p{N}_]/gu, '')
 }
@@ -133,8 +131,6 @@ export function removeHashtag(tags: string[], tag: string): string[] {
   return tags.filter((t) => t.toLowerCase() !== tag.toLowerCase())
 }
 
-/* ---------- composition & counting ---------- */
-
 /** The exact string that gets typed into a platform composer. */
 export function composeText(post: Pick<PlatformPost, 'text' | 'hashtags'>): string {
   const body = post.text.trim()
@@ -149,9 +145,7 @@ export function platformContentKey(post: Pick<PlatformPost, 'text' | 'hashtags' 
 }
 
 export function isPreparedCurrent(post: PlatformPost): boolean {
-  return Boolean(
-    post.prepared?.status === 'ready' && post.prepared.contentKey === platformContentKey(post),
-  )
+  return Boolean(post.prepared?.status === 'ready' && post.prepared.contentKey === platformContentKey(post))
 }
 
 export function isPostedCurrent(post: PlatformPost): boolean {
@@ -166,8 +160,6 @@ export function countCharacters(text: string, platform: Platform): number {
   for (const u of urls) stripped = stripped.replace(u, '')
   return [...stripped].length + urls.length * 23
 }
-
-/* ---------- platform rules & validation ---------- */
 
 export type PlatformLimits = {
   maxChars: number
@@ -192,9 +184,9 @@ export const PLATFORM_LIMITS: Record<Platform, PlatformLimits> = {
   },
   instagram: {
     maxChars: 2200,
-    maxImages: 10,
-    maxVideos: 10,
-    maxMedia: 10,
+    maxImages: 20,
+    maxVideos: 20,
+    maxMedia: 20,
     allowsMixedMedia: true,
     requiresMedia: true,
     imageMimes: ['image/png', 'image/jpeg'],
