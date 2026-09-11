@@ -28,12 +28,25 @@ export type Doctor = {
   acceptedTypes: string[]
 }
 
+export type ApiError = Error & { status?: number; body?: unknown }
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
   const text = await res.text()
-  const body = text ? JSON.parse(text) : {}
+  let body: unknown = {}
+  if (text) {
+    try {
+      body = JSON.parse(text)
+    } catch {
+      if (res.ok) throw new Error(`Postbench returned an invalid response for ${url}.`)
+      body = { error: text }
+    }
+  }
+
   if (!res.ok) {
-    const err = new Error(body.error || `Request failed (${res.status})`) as Error & { body?: unknown }
+    const record = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
+    const err = new Error(typeof record.error === 'string' ? record.error : `Request failed (${res.status})`) as ApiError
+    err.status = res.status
     err.body = body
     throw err
   }

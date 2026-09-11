@@ -365,7 +365,7 @@ export function createApp() {
     '/api/drafts/:id/posted',
     asyncRoute(async (req, res) => {
       const body = z
-        .object({ platform: PlatformEnum, url: z.string().nullable().default(null), posted: z.boolean().default(true) })
+        .object({ platform: PlatformEnum, url: z.string().url().nullable().default(null), posted: z.boolean().default(true) })
         .parse(req.body)
       const draft = await getDraft(String(req.params.id))
       const post = draft.platforms[body.platform]
@@ -398,8 +398,8 @@ export function createApp() {
       }
       let playwright = false
       try {
-        await import('playwright')
-        playwright = true
+        const { chromium } = await import('playwright')
+        playwright = fs.existsSync(chromium.executablePath())
       } catch {
         playwright = false
       }

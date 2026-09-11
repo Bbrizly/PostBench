@@ -96,11 +96,21 @@ export function MediaWorkspace({
 export function Dropzone({ onFiles }: { onFiles: (files: File[]) => void }) {
   const [over, setOver] = useState(false)
   const input = useRef<HTMLInputElement>(null)
+  const choose = () => input.current?.click()
 
   return (
     <div
       className={`dropzone${over ? ' over' : ''}`}
-      onClick={() => input.current?.click()}
+      role="button"
+      tabIndex={0}
+      aria-label="Choose or drop images and videos"
+      onClick={choose}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          choose()
+        }
+      }}
       onDragOver={(e) => {
         e.preventDefault()
         setOver(true)

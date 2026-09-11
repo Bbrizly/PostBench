@@ -46,12 +46,12 @@ export default function App() {
   }, [theme])
 
   const refreshList = useCallback(() => {
-    api.listDrafts().then(setSummaries).catch(() => {})
+    api.listDrafts().then(setSummaries).catch((e) => setToast({ kind: 'error', text: `Could not load drafts: ${e.message}` }))
   }, [])
 
   useEffect(() => {
     refreshList()
-    api.doctor().then(setDoctor).catch(() => {})
+    api.doctor().then(setDoctor).catch((e) => setToast({ kind: 'warn', text: `Setup check failed: ${e.message}` }))
   }, [refreshList])
 
   /** Replace local state with a canonical server response. */
@@ -280,7 +280,12 @@ export default function App() {
       const { draft: updated, results: nextResults } = await api.prepare(current.id, selected)
       adoptDraft(updated)
       setResults(nextResults)
-      setToast({ kind: 'ok', text: 'Composers are open. Review each one and click Publish yourself.' })
+      const ready = nextResults.filter((r) => r.status === 'ready').length
+      setToast(
+        ready === nextResults.length
+          ? { kind: 'ok', text: 'Composers are verified. Review each one and click Publish yourself.' }
+          : { kind: 'warn', text: `${ready}/${nextResults.length} composer(s) fully verified. Check the results below.` },
+      )
     } catch (e) {
       setToast({ kind: 'error', text: (e as Error).message })
     } finally {
@@ -364,7 +369,13 @@ export default function App() {
       )}
 
       {!draft ? (
-        <DraftList summaries={summaries} doctor={doctor} onOpen={openDraft} onRefresh={refreshList} />
+        <DraftList
+          summaries={summaries}
+          doctor={doctor}
+          onOpen={openDraft}
+          onRefresh={refreshList}
+          onError={(message) => setToast({ kind: 'error', text: message })}
+        />
       ) : (
         <>
           <h1>What do you want to post about?</h1>
@@ -522,11 +533,13 @@ function DraftList({
   doctor,
   onOpen,
   onRefresh,
+  onError,
 }: {
   summaries: DraftSummary[]
   doctor: Doctor | null
   onOpen: (id: string) => void
   onRefresh: () => void
+  onError: (message: string) => void
 }) {
   const [text, setText] = useState('')
   const [creating, setCreating] = useState(false)
@@ -537,6 +550,8 @@ function DraftList({
       const next = await api.createDraft(text)
       onRefresh()
       onOpen(next.id)
+    } catch (e) {
+      onError(`Could not create draft: ${(e as Error).message}`)
     } finally {
       setCreating(false)
     }
@@ -573,7 +588,7 @@ function DraftList({
           <div className="empty">No drafts yet.</div>
         ) : (
           summaries.map((s) => (
-            <div key={s.id} className="history-row" onClick={() => onOpen(s.id)}>
+            <button key={s.id} type="button" className="history-row" onClick={() => onOpen(s.id)}>
               <span className="title">{s.title}</span>
               <span className="spacer" style={{ flex: 1 }} />
               {s.platforms.map((p) => (
@@ -583,7 +598,7 @@ function DraftList({
               <span className="when">
                 {new Date(s.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
               </span>
-            </div>
+            </button>
           ))
         )}
       </section>

@@ -12,7 +12,7 @@ export function Hashtags({
 }) {
   const [custom, setCustom] = useState('')
 
-  const remove = (tag: string) => onChange(removeHashtag(selected, tag), [...suggested, tag])
+  const remove = (tag: string) => onChange(removeHashtag(selected, tag), addHashtag(suggested, tag))
   const add = (tag: string) => onChange(addHashtag(selected, tag), removeHashtag(suggested, tag))
 
   const commitCustom = () => {
