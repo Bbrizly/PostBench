@@ -1,18 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 /**
- * Adapter tests run against a fake page. They never open a browser and never
+ * Adapter runner tests use a fake page. They never open a browser and never
  * reach a social platform, so they can never create a real post.
  */
 
 const calls: string[] = []
 let loggedOut = false
+const fakePage = { url: () => 'https://example.test/' }
 
 vi.mock('../src/platforms/browser.js', () => ({
   BrowserUnavailableError: class extends Error {},
-  newPage: vi.fn(async () => ({ url: () => 'https://example.test/' })),
+  getPlatformPage: vi.fn(async () => fakePage),
   looksLikeLogin: vi.fn(async () => loggedOut),
   firstVisible: vi.fn(async () => null),
+  waitForCount: vi.fn(async () => true),
+  normalizeComposerText: (text: string) => text.trim(),
   getContext: vi.fn(),
   closeContext: vi.fn(),
 }))
@@ -24,7 +27,7 @@ const fakeAdapter = (id: string, mediaFirst = false) => ({
   openComposer: vi.fn(async () => void calls.push('open')),
   setText: vi.fn(async () => void calls.push('text')),
   uploadMedia: vi.fn(async () => void calls.push('media')),
-  checkReady: vi.fn(async () => ({ platform: id, status: 'ready', message: 'ok', details: ['Text inserted'] })),
+  checkReady: vi.fn(async () => ({ platform: id, status: 'ready', message: 'ok', details: ['Exact text verified'] })),
 })
 
 describe('prepare runner', () => {
@@ -34,14 +37,16 @@ describe('prepare runner', () => {
     vi.resetModules()
   })
 
-  it('fills text before media by default', async () => {
+  it('fills text before media by default and verifies the expected payload', async () => {
     const { preparePlatform, ADAPTERS } = await import('../src/platforms/index.js')
     const original = ADAPTERS.linkedin
+    const adapter = fakeAdapter('linkedin')
     // @ts-expect-error test double
-    ADAPTERS.linkedin = fakeAdapter('linkedin')
+    ADAPTERS.linkedin = adapter
     const result = await preparePlatform({ platform: 'linkedin', text: 'hi', mediaPaths: ['/tmp/a.png'] })
     expect(calls).toEqual(['open', 'text', 'media'])
     expect(result.status).toBe('ready')
+    expect(adapter.checkReady).toHaveBeenCalledWith(fakePage, { text: 'hi', mediaCount: 1 })
     ADAPTERS.linkedin = original
   })
 
@@ -55,7 +60,7 @@ describe('prepare runner', () => {
     ADAPTERS.instagram = original
   })
 
-  it('reports a layout change instead of throwing a stack trace', async () => {
+  it('reports an unverifiable composer instead of throwing a stack trace', async () => {
     const mod = await import('../src/platforms/index.js')
     const original = mod.ADAPTERS.x
     const broken = fakeAdapter('x')
@@ -66,7 +71,7 @@ describe('prepare runner', () => {
     mod.ADAPTERS.x = broken
     const result = await mod.preparePlatform({ platform: 'x', text: 'hi', mediaPaths: [] })
     expect(result.status).toBe('failed')
-    expect(result.message).toMatch(/layout may have changed/)
+    expect(result.message).toMatch(/could not be verified/)
     expect(result.message).not.toMatch(/at .*\.ts:/)
     mod.ADAPTERS.x = original
   })
