@@ -119,9 +119,18 @@ describe('platform validation', () => {
     expect(tooMany.some((i) => i.message.includes('at most 4 media items'))).toBe(true)
   })
 
-  it('requires media on Instagram', () => {
-    const issues = validatePlatform('instagram', { ...emptyPlatformPost(), text: 'hi' }, [])
-    expect(issues.some((i) => i.message.includes('requires at least one'))).toBe(true)
+  it('requires media on Instagram and permits twenty-item direct-composer carousels', () => {
+    expect(
+      validatePlatform('instagram', { ...emptyPlatformPost(), text: 'hi' }, []).some((i) =>
+        i.message.includes('requires at least one'),
+      ),
+    ).toBe(true)
+
+    const media = Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? image(String(i), 'image/jpeg') : video(String(i))))
+    expect(
+      validatePlatform('instagram', { ...emptyPlatformPost(), text: 'hi', mediaIds: media.map((m) => m.id) }, media)
+        .filter((i) => i.level === 'error'),
+    ).toEqual([])
   })
 
   it('rejects an unsupported mime and suggests conversion', () => {
