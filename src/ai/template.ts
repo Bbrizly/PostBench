@@ -1,6 +1,12 @@
-import { PLATFORM_LIMITS, normalizeHashtag, type Platform } from '../shared/types.js'
+import {
+  PLATFORM_LIMITS,
+  composeText,
+  countCharacters,
+  normalizeHashtag,
+  type Platform,
+} from '../shared/types.js'
 import type { GenerationRequest } from './prompt.js'
-import type { GenerationResult } from './parse.js'
+import type { GeneratedPost, GenerationResult } from './parse.js'
 
 const STOP = new Set(
   'the a an and or but for with that this these those from into your you our its it is are was were can now has have had will just about more than then them they what when which who why how'.split(
@@ -21,22 +27,44 @@ function keywords(text: string, limit: number): string[] {
 }
 
 function firstSentence(text: string): string {
-  const t = text.trim().replace(/\s+/g, ' ')
-  const m = t.match(/^(.{20,180}?[.!?])(\s|$)/)
-  return (m?.[1] ?? t.slice(0, 180)).trim()
+  const normalized = text.trim().replace(/\s+/g, ' ')
+  const m = normalized.match(/^(.{20,180}?[.!?])(\s|$)/)
+  return (m?.[1] ?? normalized.slice(0, 180)).trim()
 }
 
-function clamp(text: string, platform: Platform): string {
-  const max = PLATFORM_LIMITS[platform].maxChars - 40
-  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`
+function offlineRewrite(text: string, instruction?: string): string {
+  if (!instruction) return text
+  if (/shorter/i.test(instruction)) return firstSentence(text)
+  if (/less promotional/i.test(instruction))
+    return text
+      .replace(/\b(thrilled|excited|revolutionary|game-changing)\b/gi, '')
+      .replace(/!+/g, '.')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+  // A deterministic fallback cannot safely invent extra technical detail or reliably change voice.
+  return text
 }
 
-/**
- * Deterministic offline drafts. Not good copy — a starting point you edit.
- * ponytail: intentionally dumb; the real path is an AI adapter.
- */
+function fitPost(platform: Platform, post: GeneratedPost): GeneratedPost {
+  const hashtags = [...post.hashtags]
+  let text = post.text.trim()
+  const max = PLATFORM_LIMITS[platform].maxChars
+
+  while (countCharacters(composeText({ text, hashtags }), platform) > max && hashtags.length > 0) hashtags.pop()
+  if (countCharacters(composeText({ text, hashtags }), platform) <= max) return { ...post, text, hashtags }
+
+  let over = countCharacters(composeText({ text, hashtags }), platform) - max
+  while (over > 0 && text.length > 1) {
+    text = `${text.slice(0, Math.max(1, text.length - over - 1)).trimEnd()}…`
+    over = countCharacters(composeText({ text, hashtags }), platform) - max
+  }
+  return { ...post, text, hashtags }
+}
+
+/** Deterministic offline drafts. Intentionally plain; the real writing path is an AI adapter. */
 export function templateGenerate(req: GenerationRequest): GenerationResult {
-  const idea = (req.existingText || req.idea).trim()
+  const rawIdea = (req.existingText || req.idea).trim()
+  const idea = offlineRewrite(rawIdea, req.instruction).replace(/\s+/g, ' ').trim()
   const lead = firstSentence(idea)
   const rest = idea.slice(lead.length).trim()
   const brandTag = normalizeHashtag(req.brand.name)
@@ -50,35 +78,33 @@ export function templateGenerate(req: GenerationRequest): GenerationResult {
 
   const out: GenerationResult = {}
   for (const p of req.platforms) {
+    let post: GeneratedPost
     if (p === 'linkedin')
-      out.linkedin = {
-        // Lead line, then the detail, then context — the shape LinkedIn reads best in.
-        text: clamp(`${lead}\n\n${rest || 'Here is what changed and why it matters.'}${mediaLine}${link}`, p),
+      post = {
+        text: `${lead}\n\n${rest || 'Here is what changed and why it matters.'}${mediaLine}${link}`,
         hashtags: tags.slice(0, 4),
         suggestedHashtags: suggested,
       }
-    if (p === 'instagram')
-      out.instagram = {
-        // Visual-first: hook only when there is media to carry the rest.
-        text: clamp(`${req.media?.length ? lead : idea.replace(/\s+/g, ' ')}${mediaLine}${link}`, p),
+    else if (p === 'instagram')
+      post = {
+        text: `${req.media?.length ? lead : idea}${mediaLine}${link}`,
         hashtags: [...tags, ...suggested].slice(0, 8).map((t) => t.toLowerCase()),
         suggestedHashtags: suggested.map((t) => t.toLowerCase()),
       }
-    if (p === 'facebook')
-      out.facebook = {
-        text: clamp(
-          `${idea.replace(/\s+/g, ' ')}\n\nIf you deal with this day to day, does it match what you see?${link}`,
-          p,
-        ),
+    else if (p === 'facebook')
+      post = {
+        text: `${idea}\n\nWhat do you think?${link}`,
         hashtags: [],
         suggestedHashtags: tags,
       }
-    if (p === 'x')
-      out.x = {
-        text: clamp(`${lead}${link}`, p),
+    else
+      post = {
+        text: `${lead}${link}`,
         hashtags: tags.slice(0, 1),
         suggestedHashtags: suggested.slice(0, 3),
       }
+
+    out[p] = fitPost(p, post)
   }
   return out
 }

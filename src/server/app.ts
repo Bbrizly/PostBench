@@ -88,8 +88,6 @@ export function createApp() {
   const app = express()
   app.use(express.json({ limit: '5mb' }))
 
-  /* ---------- media files ---------- */
-
   app.get(
     '/media/:draftId/:mediaId',
     asyncRoute(async (req, res) => {
@@ -100,8 +98,6 @@ export function createApp() {
       res.sendFile(path.resolve(media.path))
     }),
   )
-
-  /* ---------- drafts ---------- */
 
   app.get(
     '/api/drafts',
@@ -153,7 +149,6 @@ export function createApp() {
       )
         throw new HttpError(400, 'Media files are managed by the media endpoints and cannot be added or removed in a draft save.')
 
-      // The client may edit media descriptions, but file paths/type/size metadata remain server-owned.
       const merged: Draft = {
         ...incoming,
         media: current.media.map((known) => ({ ...known, description: incomingMedia.get(known.id)!.description })),
@@ -174,8 +169,6 @@ export function createApp() {
       res.json({ ok: true })
     }),
   )
-
-  /* ---------- media ---------- */
 
   app.post(
     '/api/drafts/:id/media',
@@ -260,8 +253,6 @@ export function createApp() {
     }),
   )
 
-  /* ---------- generation ---------- */
-
   app.post(
     '/api/drafts/:id/generate',
     asyncRoute(async (req, res) => {
@@ -278,14 +269,21 @@ export function createApp() {
         throw new HttpError(400, 'Write an idea or add media before generating.')
 
       const first = body.platforms[0]!
+      const selectedMedia =
+        body.platforms.length === 1
+          ? draft.platforms[first].mediaIds
+              .map((id) => draft.media.find((m) => m.id === id))
+              .filter((m): m is Draft['media'][number] => Boolean(m))
+          : []
+      const generationMedia = selectedMedia.length > 0 ? selectedMedia : draft.media
       const { result, provider, note } = await generateContent({
         idea: draft.source.text,
         url: draft.source.url,
-        media: draft.media.map((m) => ({ name: m.name, type: m.type, description: m.description })),
+        media: generationMedia.map((m) => ({ name: m.name, type: m.type, description: m.description })),
         brand: await loadBrand(),
         platforms: body.platforms,
         instruction: body.instruction,
-        existingText: body.useExisting ? composeText(draft.platforms[first]) : undefined,
+        existingText: body.useExisting ? draft.platforms[first].text : undefined,
       })
 
       for (const p of body.platforms) {
@@ -296,7 +294,6 @@ export function createApp() {
           text: generated.text,
           hashtags: generated.hashtags,
           suggestedHashtags: generated.suggestedHashtags,
-          // Existing preparation/publication records remain as history; contentKey makes them stale.
           mediaIds: draft.platforms[p].mediaIds.length
             ? draft.platforms[p].mediaIds
             : defaultMediaSelection(p, draft.media),
@@ -307,8 +304,6 @@ export function createApp() {
     }),
   )
 
-  /* ---------- validation ---------- */
-
   app.get(
     '/api/drafts/:id/validate',
     asyncRoute(async (req, res) => {
@@ -318,8 +313,6 @@ export function createApp() {
       )
     }),
   )
-
-  /* ---------- prepare / publish bookkeeping ---------- */
 
   app.post(
     '/api/drafts/:id/prepare',
@@ -384,8 +377,6 @@ export function createApp() {
     }),
   )
 
-  /* ---------- brand & doctor ---------- */
-
   app.get(
     '/api/brand',
     asyncRoute(async (_req, res) => res.json(await loadBrand())),
@@ -425,8 +416,6 @@ export function createApp() {
       })
     }),
   )
-
-  /* ---------- built UI ---------- */
 
   const uiDir = path.join(REPO_ROOT, 'dist', 'ui')
   if (fs.existsSync(uiDir)) {
