@@ -67,8 +67,8 @@ export function MediaWorkspace({
               className="media-desc"
               rows={2}
               placeholder="Describe this for the AI…"
-              defaultValue={m.description}
-              onBlur={(e) => e.target.value !== m.description && onDescribe(m.id, e.target.value)}
+              value={m.description}
+              onChange={(e) => onDescribe(m.id, e.target.value)}
             />
             <div className="media-actions">
               {m.mime === 'video/quicktime' && (
