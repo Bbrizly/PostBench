@@ -14,6 +14,7 @@
     "start": "node bin/postbench.js",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.ui.json",
     "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build",
     "postbench": "tsx src/cli/index.ts"
   },
   "dependencies": {
