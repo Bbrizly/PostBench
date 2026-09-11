@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import request from 'supertest'
-import type { Draft } from '../src/shared/types.js'
+import { isPreparedCurrent, isPostedCurrent, type Draft } from '../src/shared/types.js'
 
 // Never let the integration suite touch a real browser.
 vi.mock('../src/platforms/index.js', () => ({
@@ -40,12 +40,13 @@ const PNG = Buffer.from(
 describe('postbench server', () => {
   let draft: Draft
 
-  it('creates a draft', async () => {
+  it('creates a revisioned draft', async () => {
     const res = await request(app).post('/api/drafts').send({ text: 'Faultbench searches manuals offline now.' })
     expect(res.status).toBe(201)
     draft = res.body
     expect(draft.id).toMatch(/^\d{4}-\d{2}-\d{2}-/)
     expect(draft.status).toBe('draft')
+    expect(draft.revision).toBe(1)
   })
 
   it('lists the draft', async () => {
@@ -59,11 +60,28 @@ describe('postbench server', () => {
     draft.platforms.linkedin.hashtags = ['HVAC']
     const put = await request(app).put(`/api/drafts/${draft.id}`).send(draft)
     expect(put.status).toBe(200)
+    expect(put.body.revision).toBe(draft.revision + 1)
 
     const get = await request(app).get(`/api/drafts/${draft.id}`)
     expect(get.body.platforms.linkedin.text).toBe('Edited by hand.')
     expect(get.body.platforms.linkedin.hashtags).toEqual(['HVAC'])
     draft = get.body
+  })
+
+  it('rejects a stale full-draft save instead of overwriting newer work', async () => {
+    const stale = structuredClone(draft)
+    draft.source.text = 'A newer edit'
+    const saved = await request(app).put(`/api/drafts/${draft.id}`).send(draft)
+    expect(saved.status).toBe(200)
+    draft = saved.body
+
+    stale.source.text = 'This stale edit must not win'
+    const conflict = await request(app).put(`/api/drafts/${stale.id}`).send(stale)
+    expect(conflict.status).toBe(409)
+    expect(conflict.body.error).toMatch(/changed since it was loaded/i)
+
+    const current = await request(app).get(`/api/drafts/${draft.id}`)
+    expect(current.body.source.text).toBe('A newer edit')
   })
 
   it('rejects an invalid draft body', async () => {
@@ -99,6 +117,7 @@ describe('postbench server', () => {
     expect(res.status).toBe(200)
     expect(res.body.errors[0]).toMatch(/not a supported file type/)
     expect(res.body.draft.media).toHaveLength(1)
+    draft = res.body.draft
   })
 
   it('generates all four platforms', async () => {
@@ -108,20 +127,19 @@ describe('postbench server', () => {
     draft = res.body.draft
     for (const p of ['linkedin', 'instagram', 'facebook', 'x'] as const)
       expect(draft.platforms[p].text.length).toBeGreaterThan(0)
-    // Media defaults onto every platform.
     expect(draft.platforms.linkedin.mediaIds).toEqual([draft.media[0]!.id])
   })
 
   it('regenerates one platform without touching the others', async () => {
-    const before = { ...draft.platforms }
+    const before = structuredClone(draft.platforms)
     const res = await request(app)
       .post(`/api/drafts/${draft.id}/generate`)
       .send({ platforms: ['x'], instruction: 'Make it shorter.', useExisting: true })
     expect(res.status).toBe(200)
     const after = res.body.draft as Draft
-    expect(after.platforms.linkedin.text).toBe(before.linkedin!.text)
-    expect(after.platforms.instagram.text).toBe(before.instagram!.text)
-    expect(after.platforms.facebook.text).toBe(before.facebook!.text)
+    expect(after.platforms.linkedin.text).toBe(before.linkedin.text)
+    expect(after.platforms.instagram.text).toBe(before.instagram.text)
+    expect(after.platforms.facebook.text).toBe(before.facebook.text)
     draft = after
   })
 
@@ -140,21 +158,36 @@ describe('postbench server', () => {
 
   it('blocks prepare when a post is invalid', async () => {
     draft.platforms.x.text = 'a'.repeat(400)
-    await request(app).put(`/api/drafts/${draft.id}`).send(draft)
+    const saved = await request(app).put(`/api/drafts/${draft.id}`).send(draft)
+    expect(saved.status).toBe(200)
+    draft = saved.body
+
     const res = await request(app).post(`/api/drafts/${draft.id}/prepare`).send({ platforms: ['x'] })
     expect(res.status).toBe(400)
     expect(res.body.blocked.x[0]).toMatch(/280 characters/)
   })
 
-  it('prepares valid platforms and records the result', async () => {
+  it('prepares valid platforms and records the exact prepared payload', async () => {
     draft.platforms.x.text = 'Short enough.'
-    await request(app).put(`/api/drafts/${draft.id}`).send(draft)
+    const saved = await request(app).put(`/api/drafts/${draft.id}`).send(draft)
+    expect(saved.status).toBe(200)
+    draft = saved.body
+
     const res = await request(app).post(`/api/drafts/${draft.id}/prepare`).send({ platforms: ['linkedin', 'x'] })
     expect(res.status).toBe(200)
     expect(res.body.results.map((r: { platform: string }) => r.platform)).toEqual(['linkedin', 'x'])
     draft = res.body.draft
     expect(draft.platforms.linkedin.prepared?.status).toBe('ready')
+    expect(isPreparedCurrent(draft.platforms.linkedin)).toBe(true)
     expect(draft.status).toBe('prepared')
+  })
+
+  it('makes preparation stale when the post changes', async () => {
+    draft.platforms.linkedin.text += ' changed'
+    const saved = await request(app).put(`/api/drafts/${draft.id}`).send(draft)
+    expect(saved.status).toBe(200)
+    draft = saved.body
+    expect(isPreparedCurrent(draft.platforms.linkedin)).toBe(false)
   })
 
   it('never publishes — prepare only fills composers', async () => {
@@ -162,13 +195,14 @@ describe('postbench server', () => {
     for (const call of vi.mocked(preparePlatform).mock.calls) expect(call[0]).not.toHaveProperty('publish')
   })
 
-  it('records a manual post with a URL', async () => {
+  it('records a manual post against the exact current payload', async () => {
     const res = await request(app)
       .post(`/api/drafts/${draft.id}/posted`)
       .send({ platform: 'linkedin', url: 'https://linkedin.com/posts/123' })
     expect(res.status).toBe(200)
     draft = res.body
     expect(draft.platforms.linkedin.posted?.url).toBe('https://linkedin.com/posts/123')
+    expect(isPostedCurrent(draft.platforms.linkedin)).toBe(true)
     expect(draft.status).toBe('partial')
   })
 

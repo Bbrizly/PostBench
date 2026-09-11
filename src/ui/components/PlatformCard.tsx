@@ -4,6 +4,8 @@ import {
   PLATFORM_LIMITS,
   composeText,
   countCharacters,
+  isPostedCurrent,
+  isPreparedCurrent,
   type Draft,
   type Platform,
   type PlatformPost,
@@ -49,6 +51,9 @@ export function PlatformCard({
   const limit = PLATFORM_LIMITS[platform].maxChars
   const errors = issues.filter((i) => i.level === 'error')
   const warnings = issues.filter((i) => i.level === 'warning')
+  const postedCurrent = isPostedCurrent(post)
+  const preparedCurrent = isPreparedCurrent(post)
+  const staleRecord = Boolean((post.posted && !postedCurrent) || (post.prepared && !preparedCurrent))
 
   const patch = (p: Partial<PlatformPost>) => onChange({ ...post, ...p })
 
@@ -71,8 +76,9 @@ export function PlatformCard({
           {PLATFORM_LABELS[platform]}
         </span>
         <span className="spacer" />
-        {post.posted && <span className="badge posted">posted</span>}
-        {!post.posted && post.prepared?.status === 'ready' && <span className="badge prepared">prepared</span>}
+        {postedCurrent && <span className="badge posted">posted</span>}
+        {!postedCurrent && preparedCurrent && <span className="badge prepared">prepared</span>}
+        {staleRecord && !postedCurrent && !preparedCurrent && <span className="badge partial">changed</span>}
         <button
           type="button"
           className="toggle"
@@ -147,10 +153,9 @@ export function PlatformCard({
           </ul>
         </div>
       )}
-      {post.prepared && (
-        <div className={`notice ${post.prepared.status === 'ready' ? 'ok' : post.prepared.status === 'partial' ? 'warn' : 'error'}`}>
-          {post.prepared.message}
-        </div>
+      {preparedCurrent && post.prepared && <div className="notice ok">{post.prepared.message}</div>}
+      {staleRecord && !postedCurrent && !preparedCurrent && (
+        <div className="notice warn">This post changed after it was prepared or marked posted. Prepare it again.</div>
       )}
 
       <div className="row">
@@ -172,7 +177,7 @@ export function PlatformCard({
           Open {PLATFORM_LABELS[platform]}
         </button>
         <span style={{ flex: 1 }} />
-        {post.posted ? (
+        {postedCurrent ? (
           <button type="button" className="btn small ghost" onClick={() => onMarkPosted(null, false)}>
             Undo posted
           </button>

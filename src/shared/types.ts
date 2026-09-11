@@ -29,11 +29,16 @@ export const PlatformPostSchema = z.object({
   suggestedHashtags: z.array(z.string()).default([]),
   mediaIds: z.array(z.string()).default([]),
   prepared: z
-    .object({ at: z.string(), status: z.enum(['ready', 'partial', 'failed']), message: z.string() })
+    .object({
+      at: z.string(),
+      status: z.enum(['ready', 'partial', 'failed']),
+      message: z.string(),
+      contentKey: z.string().default(''),
+    })
     .nullable()
     .default(null),
   posted: z
-    .object({ at: z.string(), url: z.string().nullable() })
+    .object({ at: z.string(), url: z.string().nullable(), contentKey: z.string().default('') })
     .nullable()
     .default(null),
 })
@@ -41,6 +46,7 @@ export type PlatformPost = z.infer<typeof PlatformPostSchema>
 
 export const DraftSchema = z.object({
   id: z.string().min(1),
+  revision: z.number().int().nonnegative().default(0),
   title: z.string().default('Untitled draft'),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -74,6 +80,7 @@ export function newDraft(id: string, text = '', url: string | null = null): Draf
   const now = new Date().toISOString()
   return DraftSchema.parse({
     id,
+    revision: 0,
     title: titleFromText(text),
     createdAt: now,
     updatedAt: now,
@@ -134,6 +141,21 @@ export function composeText(post: Pick<PlatformPost, 'text' | 'hashtags'>): stri
   if (post.hashtags.length === 0) return body
   const tags = post.hashtags.map((t) => `#${t}`).join(' ')
   return body ? `${body}\n\n${tags}` : tags
+}
+
+/** A stable key for the payload handed to a platform composer. */
+export function platformContentKey(post: Pick<PlatformPost, 'text' | 'hashtags' | 'mediaIds'>): string {
+  return JSON.stringify([composeText(post), post.mediaIds])
+}
+
+export function isPreparedCurrent(post: PlatformPost): boolean {
+  return Boolean(
+    post.prepared?.status === 'ready' && post.prepared.contentKey === platformContentKey(post),
+  )
+}
+
+export function isPostedCurrent(post: PlatformPost): boolean {
+  return Boolean(post.posted && post.posted.contentKey === platformContentKey(post))
 }
 
 /** X counts every URL as 23 chars regardless of length. */
@@ -263,8 +285,8 @@ export function validatePlatform(
 export function draftStatus(draft: Draft): Draft['status'] {
   const active = PLATFORMS.filter((p) => draft.platforms[p].enabled)
   if (active.length === 0) return 'draft'
-  if (active.every((p) => draft.platforms[p].posted)) return 'posted'
-  if (active.some((p) => draft.platforms[p].posted)) return 'partial'
-  if (active.some((p) => draft.platforms[p].prepared)) return 'prepared'
+  if (active.every((p) => isPostedCurrent(draft.platforms[p]))) return 'posted'
+  if (active.some((p) => isPostedCurrent(draft.platforms[p]))) return 'partial'
+  if (active.some((p) => isPreparedCurrent(draft.platforms[p]))) return 'prepared'
   return 'draft'
 }

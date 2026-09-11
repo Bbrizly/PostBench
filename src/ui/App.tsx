@@ -35,16 +35,15 @@ export default function App() {
   const [uploading, setUploading] = useState(false)
   const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved')
 
+  const draftRef = useRef<Draft | null>(null)
+  const dirtyRef = useRef(false)
+  const saveTimer = useRef<number | null>(null)
+  const saveInFlight = useRef<Promise<void> | null>(null)
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     localStorage.setItem('postbench-theme', theme)
   }, [theme])
-
-  useEffect(() => {
-    const onHash = () => setDraftId(routeId())
-    window.addEventListener('hashchange', onHash)
-    return () => window.removeEventListener('hashchange', onHash)
-  }, [])
 
   const refreshList = useCallback(() => {
     api.listDrafts().then(setSummaries).catch(() => {})
@@ -55,67 +54,148 @@ export default function App() {
     api.doctor().then(setDoctor).catch(() => {})
   }, [refreshList])
 
+  /** Replace local state with a canonical server response. */
+  const adoptDraft = useCallback((next: Draft) => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    saveTimer.current = null
+    dirtyRef.current = false
+    draftRef.current = next
+    setDraft(next)
+    setSaveState('saved')
+  }, [])
+
+  /** Apply a local edit immediately and let the autosave coordinator persist it. */
+  const editDraft = useCallback((update: (current: Draft) => Draft) => {
+    const current = draftRef.current
+    if (!current) return
+    const next = update(current)
+    dirtyRef.current = true
+    draftRef.current = next
+    setDraft(next)
+    setResults([])
+  }, [])
+
+  /**
+   * Flush the newest local draft before any server action that reads or mutates it.
+   * If the user types while a save is in flight, rebase that local edit onto the returned revision
+   * and immediately save again instead of replacing it with stale server state.
+   */
+  const flushDraft = useCallback(async (): Promise<Draft | null> => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    saveTimer.current = null
+
+    while (true) {
+      if (saveInFlight.current) {
+        await saveInFlight.current
+        continue
+      }
+
+      const snapshot = draftRef.current
+      if (!snapshot || !dirtyRef.current) {
+        setSaveState('saved')
+        return snapshot
+      }
+
+      dirtyRef.current = false
+      setSaveState('saving')
+      const task = (async () => {
+        try {
+          const saved = await api.saveDraft(snapshot)
+          const current = draftRef.current
+          if (!current || current.id !== snapshot.id) return
+
+          if (current === snapshot) {
+            draftRef.current = saved
+            setDraft(saved)
+          } else if (current.revision === snapshot.revision) {
+            const rebased = { ...current, revision: saved.revision, updatedAt: saved.updatedAt }
+            draftRef.current = rebased
+            setDraft(rebased)
+            dirtyRef.current = true
+          }
+          refreshList()
+        } catch (err) {
+          dirtyRef.current = true
+          throw err
+        }
+      })()
+
+      saveInFlight.current = task
+      try {
+        await task
+      } finally {
+        if (saveInFlight.current === task) saveInFlight.current = null
+      }
+    }
+  }, [refreshList])
+
+  useEffect(() => {
+    if (!draft || !dirtyRef.current) return
+    setSaveState('saving')
+    if (saveTimer.current) window.clearTimeout(saveTimer.current)
+    saveTimer.current = window.setTimeout(() => {
+      void flushDraft().catch((e) => setToast({ kind: 'error', text: `Could not save: ${e.message}` }))
+    }, 600)
+    return () => {
+      if (saveTimer.current) window.clearTimeout(saveTimer.current)
+      saveTimer.current = null
+    }
+  }, [draft, flushDraft])
+
+  useEffect(() => {
+    const onHash = () => {
+      const next = routeId()
+      void flushDraft()
+        .catch((e) => setToast({ kind: 'error', text: `Could not save before navigating: ${e.message}` }))
+        .finally(() => setDraftId(next))
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [flushDraft])
+
   useEffect(() => {
     if (!draftId) {
+      draftRef.current = null
+      dirtyRef.current = false
       setDraft(null)
       return
     }
     api
       .getDraft(draftId)
       .then((d) => {
-        setDraft(d)
+        adoptDraft(d)
         setResults([])
       })
       .catch((e) => setToast({ kind: 'error', text: e.message }))
-  }, [draftId])
-
-  /* ---------- autosave ---------- */
-
-  const saveTimer = useRef<number | null>(null)
-  const skipSave = useRef(true)
+  }, [draftId, adoptDraft])
 
   useEffect(() => {
-    if (!draft) return
-    if (skipSave.current) {
-      skipSave.current = false
-      return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirtyRef.current) return
+      e.preventDefault()
+      e.returnValue = ''
     }
-    setSaveState('saving')
-    if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    saveTimer.current = window.setTimeout(() => {
-      api
-        .saveDraft(draft)
-        .then(() => {
-          setSaveState('saved')
-          refreshList()
-        })
-        .catch((e) => setToast({ kind: 'error', text: `Could not save: ${e.message}` }))
-    }, 600)
-    return () => {
-      if (saveTimer.current) window.clearTimeout(saveTimer.current)
-    }
-  }, [draft, refreshList])
-
-  /** Replace the draft from a server response without re-triggering autosave. */
-  const adoptDraft = (d: Draft) => {
-    skipSave.current = true
-    setDraft(d)
-  }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [])
 
   const openDraft = (id: string) => {
-    skipSave.current = true
     window.location.hash = `#/d/${encodeURIComponent(id)}`
-    setDraftId(id)
+  }
+
+  const goHome = () => {
+    window.location.hash = ''
   }
 
   /* ---------- media ---------- */
 
   const uploadFiles = useCallback(
     async (files: File[]) => {
-      if (!draft) return
       setUploading(true)
       try {
-        const { draft: updated, errors } = await api.uploadMedia(draft.id, files)
+        const current = await flushDraft()
+        if (!current) return
+        const { draft: updated, errors } = await api.uploadMedia(current.id, files)
         adoptDraft(updated)
         if (errors.length) setToast({ kind: 'warn', text: errors.join(' ') })
       } catch (e) {
@@ -124,12 +204,13 @@ export default function App() {
         setUploading(false)
       }
     },
-    [draft],
+    [adoptDraft, flushDraft],
   )
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
-      if (!draft || !e.clipboardData) return
+      const current = draftRef.current
+      if (!current || !e.clipboardData) return
       const files = Array.from(e.clipboardData.files)
       if (files.length) {
         e.preventDefault()
@@ -142,30 +223,27 @@ export default function App() {
       if (!text) return
       e.preventDefault()
       const isUrl = /^https?:\/\/\S+$/.test(text)
-      setDraft((d) =>
-        d
-          ? {
-              ...d,
-              source: isUrl
-                ? { ...d.source, url: text }
-                : { ...d.source, text: d.source.text ? `${d.source.text}\n${text}` : text },
-            }
-          : d,
-      )
+      editDraft((d) => ({
+        ...d,
+        source: isUrl
+          ? { ...d.source, url: text }
+          : { ...d.source, text: d.source.text ? `${d.source.text}\n${text}` : text },
+      }))
       setToast({ kind: 'info', text: isUrl ? 'Link added to the draft.' : 'Text pasted into the idea box.' })
     }
     window.addEventListener('paste', onPaste)
     return () => window.removeEventListener('paste', onPaste)
-  }, [draft, uploadFiles])
+  }, [editDraft, uploadFiles])
 
   /* ---------- actions ---------- */
 
   const generate = async (platforms: Platform[], instruction?: string) => {
-    if (!draft) return
     setGenerating(platforms.length === 1 ? platforms[0]! : 'all')
     setToast(null)
     try {
-      const { draft: updated, provider, note } = await api.generate(draft.id, {
+      const current = await flushDraft()
+      if (!current) return
+      const { draft: updated, provider, note } = await api.generate(current.id, {
         platforms,
         instruction,
         useExisting: platforms.length === 1 && Boolean(instruction),
@@ -193,13 +271,15 @@ export default function App() {
   const blockingErrors = selected.flatMap((p) => issues[p].filter((i) => i.level === 'error'))
 
   const prepare = async () => {
-    if (!draft || selected.length === 0) return
+    if (selected.length === 0) return
     setPreparing(true)
     setToast({ kind: 'info', text: 'Opening the Postbench browser…' })
     try {
-      const { draft: updated, results: r } = await api.prepare(draft.id, selected)
+      const current = await flushDraft()
+      if (!current) return
+      const { draft: updated, results: nextResults } = await api.prepare(current.id, selected)
       adoptDraft(updated)
-      setResults(r)
+      setResults(nextResults)
       setToast({ kind: 'ok', text: 'Composers are open. Review each one and click Publish yourself.' })
     } catch (e) {
       setToast({ kind: 'error', text: (e as Error).message })
@@ -209,7 +289,50 @@ export default function App() {
   }
 
   const setPost = (platform: Platform, post: PlatformPost) =>
-    setDraft((d) => (d ? { ...d, platforms: { ...d.platforms, [platform]: post } } : d))
+    editDraft((d) => ({ ...d, platforms: { ...d.platforms, [platform]: post } }))
+
+  const reorderMedia = async (mediaId: string, order: number) => {
+    try {
+      const current = await flushDraft()
+      if (!current) return
+      adoptDraft(await api.patchMedia(current.id, mediaId, { order }))
+    } catch (e) {
+      setToast({ kind: 'error', text: (e as Error).message })
+    }
+  }
+
+  const removeMedia = async (mediaId: string) => {
+    try {
+      const current = await flushDraft()
+      if (!current) return
+      adoptDraft(await api.deleteMedia(current.id, mediaId))
+    } catch (e) {
+      setToast({ kind: 'error', text: (e as Error).message })
+    }
+  }
+
+  const convertMedia = async (mediaId: string) => {
+    setMediaBusy(mediaId)
+    try {
+      const current = await flushDraft()
+      if (!current) return
+      adoptDraft(await api.convertMedia(current.id, mediaId))
+    } catch (e) {
+      setToast({ kind: 'error', text: (e as Error).message })
+    } finally {
+      setMediaBusy(null)
+    }
+  }
+
+  const markPosted = async (platform: Platform, url: string | null, posted: boolean) => {
+    try {
+      const current = await flushDraft()
+      if (!current) return
+      adoptDraft(await api.markPosted(current.id, platform, url, posted))
+    } catch (e) {
+      setToast({ kind: 'error', text: (e as Error).message })
+    }
+  }
 
   /* ---------- render ---------- */
 
@@ -220,7 +343,7 @@ export default function App() {
           Post<span>bench</span>
         </span>
         {draft && (
-          <button type="button" className="btn ghost small" onClick={() => (window.location.hash = '')}>
+          <button type="button" className="btn ghost small" onClick={goHome}>
             ← All drafts
           </button>
         )}
@@ -250,15 +373,19 @@ export default function App() {
             <textarea
               className="idea"
               value={draft.source.text}
-              placeholder="Faultbench can now search HVAC manuals completely offline."
-              onChange={(e) => setDraft({ ...draft, source: { ...draft.source, text: e.target.value } })}
+              placeholder="What changed, and why should someone care?"
+              onChange={(e) =>
+                editDraft((d) => ({ ...d, source: { ...d.source, text: e.target.value } }))
+              }
             />
             <div className="row" style={{ marginTop: 10 }}>
               <input
                 type="url"
                 placeholder="Optional link"
                 value={draft.source.url ?? ''}
-                onChange={(e) => setDraft({ ...draft, source: { ...draft.source, url: e.target.value || null } })}
+                onChange={(e) =>
+                  editDraft((d) => ({ ...d, source: { ...d.source, url: e.target.value || null } }))
+                }
                 style={{ maxWidth: 320 }}
               />
               <span style={{ flex: 1 }} />
@@ -292,28 +419,14 @@ export default function App() {
                 draft={draft}
                 busyId={mediaBusy}
                 onDescribe={(mediaId, description) =>
-                  api.patchMedia(draft.id, mediaId, { description }).then(adoptDraft).catch((e) =>
-                    setToast({ kind: 'error', text: e.message }),
-                  )
+                  editDraft((d) => ({
+                    ...d,
+                    media: d.media.map((m) => (m.id === mediaId ? { ...m, description } : m)),
+                  }))
                 }
-                onReorder={(mediaId, order) =>
-                  api.patchMedia(draft.id, mediaId, { order }).then(adoptDraft).catch((e) =>
-                    setToast({ kind: 'error', text: e.message }),
-                  )
-                }
-                onRemove={(mediaId) =>
-                  api.deleteMedia(draft.id, mediaId).then(adoptDraft).catch((e) =>
-                    setToast({ kind: 'error', text: e.message }),
-                  )
-                }
-                onConvert={(mediaId) => {
-                  setMediaBusy(mediaId)
-                  api
-                    .convertMedia(draft.id, mediaId)
-                    .then(adoptDraft)
-                    .catch((e) => setToast({ kind: 'error', text: e.message }))
-                    .finally(() => setMediaBusy(null))
-                }}
+                onReorder={(mediaId, order) => void reorderMedia(mediaId, order)}
+                onRemove={(mediaId) => void removeMedia(mediaId)}
+                onConvert={(mediaId) => void convertMedia(mediaId)}
               />
             </section>
           )}
@@ -338,11 +451,7 @@ export default function App() {
                       .then((r) => setToast({ kind: r.ok ? 'ok' : 'error', text: r.message }))
                       .catch((e) => setToast({ kind: 'error', text: e.message }))
                   }
-                  onMarkPosted={(url, posted) =>
-                    api.markPosted(draft.id, p, url, posted).then(adoptDraft).catch((e) =>
-                      setToast({ kind: 'error', text: e.message }),
-                    )
-                  }
+                  onMarkPosted={(url, posted) => void markPosted(p, url, posted)}
                 />
               ))}
             </div>
@@ -425,9 +534,9 @@ function DraftList({
   const create = async () => {
     setCreating(true)
     try {
-      const draft = await api.createDraft(text)
+      const next = await api.createDraft(text)
       onRefresh()
-      onOpen(draft.id)
+      onOpen(next.id)
     } finally {
       setCreating(false)
     }
@@ -440,7 +549,7 @@ function DraftList({
         <textarea
           className="idea"
           value={text}
-          placeholder="Faultbench can now search HVAC manuals completely offline."
+          placeholder="What changed, and why should someone care?"
           onChange={(e) => setText(e.target.value)}
         />
         <div className="row" style={{ marginTop: 10 }}>

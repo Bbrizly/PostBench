@@ -13,10 +13,12 @@ import {
   draftStatus,
   validatePlatform,
   composeText,
+  platformContentKey,
   type Draft,
   type Platform,
 } from '../shared/types.js'
 import {
+  DraftConflictError,
   ensureDirs,
   listDrafts,
   loadDraft,
@@ -117,7 +119,8 @@ export function createApp() {
       const incoming = DraftSchema.parse(req.body)
       const current = await getDraft(String(req.params.id))
       if (incoming.id !== current.id) throw new HttpError(400, 'Draft id cannot be changed.')
-      // Media is owned by the upload endpoints; the UI never gets to rewrite file paths.
+      if (incoming.revision !== current.revision) throw new DraftConflictError(current.id)
+      // Media is owned by the upload endpoints; the UI never gets to rewrite known file paths.
       const merged: Draft = {
         ...incoming,
         media: incoming.media.map((m) => {
@@ -246,9 +249,7 @@ export function createApp() {
           text: generated.text,
           hashtags: generated.hashtags,
           suggestedHashtags: generated.suggestedHashtags,
-          // Regenerating invalidates a previous preparation but never a manual post record.
-          prepared: null,
-          // Default new posts to every image; the user narrows it per platform.
+          // Existing preparation/publication records remain as history; contentKey makes them stale.
           mediaIds: draft.platforms[p].mediaIds.length
             ? draft.platforms[p].mediaIds
             : draft.media.filter((m) => m.type === 'image').map((m) => m.id),
@@ -291,6 +292,7 @@ export function createApp() {
       const results = []
       for (const p of body.platforms) {
         const post = draft.platforms[p]
+        const contentKey = platformContentKey(post)
         const result = await preparePlatform({
           platform: p,
           text: composeText(post),
@@ -303,6 +305,7 @@ export function createApp() {
           at: new Date().toISOString(),
           status: result.status === 'ready' ? 'ready' : result.status === 'login' ? 'partial' : 'failed',
           message: result.message,
+          contentKey,
         }
       }
       draft.status = draftStatus(draft)
@@ -325,8 +328,9 @@ export function createApp() {
         .object({ platform: PlatformEnum, url: z.string().nullable().default(null), posted: z.boolean().default(true) })
         .parse(req.body)
       const draft = await getDraft(String(req.params.id))
-      draft.platforms[body.platform].posted = body.posted
-        ? { at: new Date().toISOString(), url: body.url }
+      const post = draft.platforms[body.platform]
+      post.posted = body.posted
+        ? { at: new Date().toISOString(), url: body.url, contentKey: platformContentKey(post) }
         : null
       draft.status = draftStatus(draft)
       res.json(await saveDraft(draft))
@@ -385,6 +389,7 @@ export function createApp() {
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     if (err instanceof HttpError) return res.status(err.status).json({ error: err.message })
+    if (err instanceof DraftConflictError) return res.status(409).json({ error: err.message })
     if (err instanceof z.ZodError)
       return res.status(400).json({ error: `Invalid request: ${err.issues.map((i) => i.message).join('; ')}` })
     const message = err instanceof Error ? err.message : String(err)

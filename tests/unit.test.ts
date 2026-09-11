@@ -10,6 +10,9 @@ import {
   validatePlatform,
   draftStatus,
   emptyPlatformPost,
+  platformContentKey,
+  isPreparedCurrent,
+  isPostedCurrent,
   type Media,
 } from '../src/shared/types.js'
 import { parseGenerationResult, extractJson } from '../src/ai/parse.js'
@@ -38,8 +41,9 @@ const video = (id: string, mime = 'video/mp4'): Media => ({
 })
 
 describe('draft validation', () => {
-  it('accepts the shipped example draft', () => {
-    expect(() => DraftSchema.parse(example)).not.toThrow()
+  it('accepts the shipped example draft and migrates a missing revision', () => {
+    const parsed = DraftSchema.parse(example)
+    expect(parsed.revision).toBe(0)
   })
 
   it('rejects a draft missing a platform', () => {
@@ -50,6 +54,7 @@ describe('draft validation', () => {
   it('fills defaults for a new draft', () => {
     const d = newDraft('x', 'Hello there')
     expect(d.status).toBe('draft')
+    expect(d.revision).toBe(0)
     expect(d.platforms.x.enabled).toBe(true)
     expect(d.title).toBe('Hello there')
   })
@@ -145,20 +150,42 @@ describe('platform validation', () => {
 })
 
 describe('draft status', () => {
-  it('reports prepared, partial and posted', () => {
+  it('reports only current prepared and posted payloads', () => {
     const d = newDraft('d', 'idea')
     for (const p of ['instagram', 'facebook', 'x'] as const) d.platforms[p].enabled = false
     expect(draftStatus(d)).toBe('draft')
 
-    d.platforms.linkedin.prepared = { at: 'now', status: 'ready', message: '' }
+    const linkedin = d.platforms.linkedin
+    linkedin.prepared = {
+      at: 'now',
+      status: 'ready',
+      message: '',
+      contentKey: platformContentKey(linkedin),
+    }
+    expect(isPreparedCurrent(linkedin)).toBe(true)
     expect(draftStatus(d)).toBe('prepared')
 
     d.platforms.x.enabled = true
-    d.platforms.linkedin.posted = { at: 'now', url: null }
+    linkedin.posted = { at: 'now', url: null, contentKey: platformContentKey(linkedin) }
+    expect(isPostedCurrent(linkedin)).toBe(true)
     expect(draftStatus(d)).toBe('partial')
 
-    d.platforms.x.posted = { at: 'now', url: null }
+    const x = d.platforms.x
+    x.posted = { at: 'now', url: null, contentKey: platformContentKey(x) }
     expect(draftStatus(d)).toBe('posted')
+  })
+
+  it('does not call failed or stale preparation prepared', () => {
+    const d = newDraft('d', 'idea')
+    for (const p of ['instagram', 'facebook', 'x'] as const) d.platforms[p].enabled = false
+    const post = d.platforms.linkedin
+    post.prepared = { at: 'now', status: 'failed', message: 'failed', contentKey: platformContentKey(post) }
+    expect(draftStatus(d)).toBe('draft')
+
+    post.prepared = { at: 'now', status: 'ready', message: 'ready', contentKey: platformContentKey(post) }
+    post.text = 'changed after prepare'
+    expect(isPreparedCurrent(post)).toBe(false)
+    expect(draftStatus(d)).toBe('draft')
   })
 })
 

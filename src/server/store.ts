@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { DraftSchema, BrandSchema, type Draft, type Brand } from '../shared/types.js'
 
@@ -28,13 +29,60 @@ export function safeId(id: string): string {
   return clean
 }
 
+export class DraftConflictError extends Error {
+  constructor(readonly id: string) {
+    super(`Draft "${id}" changed since it was loaded. Reload it and try again.`)
+  }
+}
+
+const saveQueues = new Map<string, Promise<unknown>>()
+
+function enqueueDraftSave<T>(id: string, work: () => Promise<T>): Promise<T> {
+  const key = safeId(id)
+  const previous = saveQueues.get(key) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(work)
+  saveQueues.set(key, current)
+  void current.finally(() => {
+    if (saveQueues.get(key) === current) saveQueues.delete(key)
+  }).catch(() => undefined)
+  return current
+}
+
+async function readDraftFile(file: string): Promise<Draft | null> {
+  try {
+    return DraftSchema.parse(JSON.parse(await fs.readFile(file, 'utf8')))
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
+/**
+ * Atomically saves one draft. Existing drafts use revision-based compare-and-swap so a stale
+ * request cannot overwrite a newer edit. Saves for the same draft are serialized in-process.
+ */
 export async function saveDraft(draft: Draft): Promise<Draft> {
   await ensureDirs()
-  const parsed = DraftSchema.parse({ ...draft, updatedAt: new Date().toISOString() })
-  const file = draftPath(parsed.id)
-  await fs.writeFile(`${file}.tmp`, JSON.stringify(parsed, null, 2))
-  await fs.rename(`${file}.tmp`, file)
-  return parsed
+  return enqueueDraftSave(draft.id, async () => {
+    const file = draftPath(draft.id)
+    const current = await readDraftFile(file)
+    if (current && current.revision !== draft.revision) throw new DraftConflictError(draft.id)
+    if (!current && draft.revision !== 0) throw new DraftConflictError(draft.id)
+
+    const parsed = DraftSchema.parse({
+      ...draft,
+      revision: (current?.revision ?? 0) + 1,
+      updatedAt: new Date().toISOString(),
+    })
+    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`
+    try {
+      await fs.writeFile(tmp, JSON.stringify(parsed, null, 2))
+      await fs.rename(tmp, file)
+    } finally {
+      await fs.rm(tmp, { force: true }).catch(() => undefined)
+    }
+    return parsed
+  })
 }
 
 export async function loadDraft(id: string): Promise<Draft> {
