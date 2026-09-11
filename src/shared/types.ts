@@ -173,6 +173,7 @@ export type PlatformLimits = {
   maxChars: number
   maxImages: number
   maxVideos: number
+  maxMedia?: number
   allowsMixedMedia: boolean
   requiresMedia: boolean
   imageMimes: string[]
@@ -182,17 +183,18 @@ export type PlatformLimits = {
 export const PLATFORM_LIMITS: Record<Platform, PlatformLimits> = {
   linkedin: {
     maxChars: 3000,
-    maxImages: 9,
+    maxImages: 20,
     maxVideos: 1,
     allowsMixedMedia: false,
     requiresMedia: false,
-    imageMimes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
+    imageMimes: ['image/png', 'image/jpeg', 'image/gif'],
     videoMimes: ['video/mp4', 'video/quicktime'],
   },
   instagram: {
     maxChars: 2200,
     maxImages: 10,
     maxVideos: 10,
+    maxMedia: 10,
     allowsMixedMedia: true,
     requiresMedia: true,
     imageMimes: ['image/png', 'image/jpeg'],
@@ -211,7 +213,8 @@ export const PLATFORM_LIMITS: Record<Platform, PlatformLimits> = {
     maxChars: 280,
     maxImages: 4,
     maxVideos: 1,
-    allowsMixedMedia: false,
+    maxMedia: 4,
+    allowsMixedMedia: true,
     requiresMedia: false,
     imageMimes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'],
     videoMimes: ['video/mp4'],
@@ -219,6 +222,35 @@ export const PLATFORM_LIMITS: Record<Platform, PlatformLimits> = {
 }
 
 export type ValidationIssue = { level: 'error' | 'warning'; message: string }
+
+export function compatibleMedia(platform: Platform, media: Media): boolean {
+  const limits = PLATFORM_LIMITS[platform]
+  return media.type === 'image' ? limits.imageMimes.includes(media.mime) : limits.videoMimes.includes(media.mime)
+}
+
+/** Pick a valid starting media set instead of auto-selecting files the platform cannot accept. */
+export function defaultMediaSelection(platform: Platform, allMedia: Media[]): string[] {
+  const limits = PLATFORM_LIMITS[platform]
+  const compatible = allMedia.filter((m) => compatibleMedia(platform, m))
+  const picked: Media[] = []
+  let images = 0
+  let videos = 0
+
+  for (const media of compatible) {
+    if (limits.maxMedia !== undefined && picked.length >= limits.maxMedia) break
+    if (media.type === 'image') {
+      if (images >= limits.maxImages) continue
+      if (!limits.allowsMixedMedia && videos > 0) continue
+      images++
+    } else {
+      if (videos >= limits.maxVideos) continue
+      if (!limits.allowsMixedMedia && images > 0) continue
+      videos++
+    }
+    picked.push(media)
+  }
+  return picked.map((m) => m.id)
+}
 
 export function validatePlatform(
   platform: Platform,
@@ -253,6 +285,8 @@ export function validatePlatform(
   if (limits.requiresMedia && selected.length === 0)
     issues.push({ level: 'error', message: `${label} requires at least one image or video.` })
 
+  if (limits.maxMedia !== undefined && selected.length > limits.maxMedia)
+    issues.push({ level: 'error', message: `${label} accepts at most ${limits.maxMedia} media items.` })
   if (images.length > limits.maxImages)
     issues.push({ level: 'error', message: `${label} accepts at most ${limits.maxImages} images.` })
   if (videos.length > limits.maxVideos)
@@ -264,8 +298,7 @@ export function validatePlatform(
     })
 
   for (const m of selected) {
-    const allowed = m.type === 'image' ? limits.imageMimes : limits.videoMimes
-    if (!allowed.includes(m.mime))
+    if (!compatibleMedia(platform, m))
       issues.push({
         level: 'error',
         message: `${label} does not accept ${m.name} (${m.mime}).${
